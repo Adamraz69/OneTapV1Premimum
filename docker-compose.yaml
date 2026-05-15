@@ -9,4 +9,6 @@ services:
         limits:
           cpus: '0.20'
           memory: 990M
+        reservations:
+          memory: 100M
     restart: always
