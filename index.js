@@ -689,7 +689,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             .setColor(0x2B2D31)
             .setDescription(`> 👋 **${newState.member.displayName}** joined **${newState.channel.name}**!\n> <@${channelData.ownerId}> welcome them with love 💝`)
             .setFooter({ text: 'Together in friendship and harmony 🤝', iconURL: newState.guild.iconURL({ dynamic: true }) });
-          await newState.channel.send({ embeds: [joinEmbed] });
+          const sent = await newState.channel.send({ embeds: [joinEmbed] });
+          setTimeout(() => sent.delete().catch(() => {}), 60_000);
         } catch (_) {}
       }
 
