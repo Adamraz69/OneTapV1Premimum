@@ -4,24 +4,20 @@ module.exports = {
   name: 'unreject',
   description: 'Remove a user from the rejected list and allow joining.',
   execute: async (client, message, args, tempChannels) => {
+    const err = (msg) => new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`${msg}\`**__`);
+
     const voiceChannel = message.member.voice.channel;
     if (!voiceChannel) {
-      return message.reply({ embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle('❌ خطأ').setDescription('يجب أن تكون في قناة صوتية لاستخدام هذا الأمر!').setTimestamp()] });
+      return message.reply({ embeds: [err('You must be in a voice channel!')] });
     }
     const channelData = tempChannels.get(voiceChannel.id);
     if (!channelData) {
-      const errorEmbed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **This is not a temporary channel!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
-      return message.reply({ embeds: [errorEmbed] });
+      return message.reply({ embeds: [err('This is not a temporary channel!')] });
     }
     if (channelData.ownerId !== message.author.id) {
-      const errorEmbed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **You are not the owner of this channel!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
-      return message.reply({ embeds: [errorEmbed] });
+      return message.reply({ embeds: [err('You are not the owner of this channel!')] });
     }
     let targetId = null;
     const mention = message.mentions.users.first();
@@ -31,10 +27,10 @@ module.exports = {
       targetId = args[0].replace(/[^0-9]/g, '');
     }
     if (!targetId) {
-      return message.reply({ embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle('❌ خطأ').setDescription('يرجى منشن المستخدم أو توفير ID صحيح!').setTimestamp()] });
+      return message.reply({ embeds: [err('Please mention a user or provide a valid ID!')] });
     }
     if (!Array.isArray(channelData.rejectedUsers) || !channelData.rejectedUsers.includes(targetId)) {
-      return message.reply({ embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle('⚠️ تحذير').setDescription('المستخدم غير موجود ضمن قائمة المحظورين لهذه القناة.').setTimestamp()] });
+      return message.reply({ embeds: [err('That user is not in the rejected list!')] });
     }
     channelData.rejectedUsers = channelData.rejectedUsers.filter(id => id !== targetId);
     try {
@@ -44,13 +40,8 @@ module.exports = {
     const username = member?.user?.username || targetId;
     const successEmbed = new EmbedBuilder()
       .setColor(0x2B2D31)
-      .setTitle('✅ تم إلغاء الحظر')
-      .setDescription(`تم إلغاء حظر المستخدم **${username}** ويمكنه الانضمام مجددًا.`)
-      .addFields(
-        { name: '👤 المستخدم', value: `<@${targetId}>`, inline: true },
-        { name: '🎤 القناة', value: voiceChannel.name, inline: true }
-      )
-      .setTimestamp();
+      .setDescription(`<:reject:1519126684958457957>  *\`Unrejected <@${targetId}>\`*`);
+
     message.reply({ embeds: [successEmbed] });
   }
 };

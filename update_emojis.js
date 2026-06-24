@@ -8,25 +8,25 @@ const commandsDir = path.join(__dirname, 'commands');
 const files = fs.readdirSync(commandsDir).filter(file => file.endsWith('.js'));
 
 const replacements = [
-    { original: '🔒', new: '<:voice3:1358152470081175622>' }, // Lock
-    { original: '🔓', new: '<:voice1:1358152473403195555>' }, // Unlock
-    { original: '✏️', new: '<:voice6:1358152460979404992>' }, // Rename
-    { original: '🔢', new: '<:voice4:1358152468273430718>' }, // Limit
-    // { original: '👁️', new: '<a:Red_Eye:1450210370487718071>' }, // Hide (careful, sometimes means visible?)
+    { original: '🔒', new: '<:lock:1518716352456687697>' }, // Lock
+    { original: '🔓', new: '<:unlock:1518717955871866900>' }, // Unlock
+    { original: '✏️', new: '<:editing:1518718647651139657>' }, // Rename
+    { original: '🔢', new: '<:limited:1518719076464070848>' }, // Limit
+    // { original: '👁️', new: '<:hidden:1518719584557989998>' }, // Hide (careful, sometimes means visible?)
     // In panel.js original: Hide was 👁️, Unhide was 👀
     // But in some contexts 👁️ might mean "Visible".
     // User: HIDE -> Red_Eye, UNHIDE -> Eyes.
     // I'll be specific.
-    { original: '👁️', new: '<a:Red_Eye:1450210370487718071>' },
-    { original: '👀', new: '<a:Eyes:1450279319971823789>' },
-    { original: '👢', new: '<a:sssss:1450241657261002864>' }, // Kick
+    { original: '👁️', new: '<:hidden:1518719584557989998>' },
+    { original: '👀', new: '<:hidden:1518719584557989998>' },
+    { original: '👢', new: '<:kick:1518720896502731063>' }, // Kick
     { original: '👑', new: '<a:12104crownpink:1449139449211387945>' }, // Transfer/Owner?
     { original: '📊', new: '<:voice2:1358152471687467228>' }, // Info
-    { original: '🗑️', new: '<:trash:1450280880881930341>' }, // Delete
+    { original: '🗑️', new: '<:delete:1518723074231632034>' }, // Delete
 
     // Additional ones
     // { original: '⚠️', new: '<a:warning_animated:1361729714259099809>' }, // Warning
-    // { original: '❌', new: '<:trash:1450280880881930341>' } // Error? Maybe too aggressive to replace all X with trash.
+    // { original: '❌', new: '<:delete:1518723074231632034>' } // Error? Maybe too aggressive to replace all X with trash.
 ];
 
 let updatedCount = 0;

@@ -4,68 +4,42 @@ module.exports = {
   name: 'status',
   description: 'Change the status/description of your voice channel',
   execute: async (client, message, args, tempChannels) => {
+    const err = (msg) => new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`${msg}\`**__`);
+
     const voiceChannel = message.member.voice.channel;
     
     if (!voiceChannel) {
-      const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setTitle('❌ خطأ')
-        .setDescription('يجب أن تكون في قناة صوتية لاستخدام هذا الأمر!')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
+      return message.reply({ embeds: [err('You must be in a voice channel to use this command!')] });
     }
     
     const channelData = tempChannels.get(voiceChannel.id);
     
     if (!channelData) {
-      const errorEmbed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **This is not a temporary channel!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
-      return message.reply({ embeds: [errorEmbed] });
+      return message.reply({ embeds: [err('This is not a temporary channel!')] });
     }
     
-    // Check if the user is the owner of the channel
     if (channelData.ownerId !== message.author.id) {
-      const errorEmbed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **You are not the owner of this channel!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
-      return message.reply({ embeds: [errorEmbed] });
+      return message.reply({ embeds: [err('You are not the owner of this channel!')] });
     }
     
-    // Get the new status from arguments
     const newStatus = args.join(' ');
     
     if (!newStatus) {
-      const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setTitle('📝 حالة مطلوبة')
-        .setDescription('يرجى إدخال حالة للقناة. مثال: `.v status حالتي هنا`')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
+      return message.reply({ embeds: [err('Please provide a status text!')] });
     }
     
     if (newStatus.length > 100) {
-      const embed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setTitle('⚠️ الحالة طويلة')
-        .setDescription('يجب أن تكون الحالة 100 حرفًا أو أقل.')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
+      return message.reply({ embeds: [err('Status must be 100 characters or less!')] });
     }
     
     try {
-      // Store the status in the channel data
       if (!channelData.settings) {
         channelData.settings = {};
       }
       channelData.settings.status = newStatus;
       
-      // Use Discord API directly to set voice channel status
       const response = await fetch(`https://discord.com/api/v10/channels/${voiceChannel.id}/voice-status`, {
         method: 'PUT',
         headers: {
@@ -79,47 +53,36 @@ module.exports = {
       
       if (response.ok) {
         {
-          const embed = new EmbedBuilder()
+          const successEmbed = new EmbedBuilder()
             .setColor(0x2B2D31)
-            .setTitle('✅ تم التحديث')
-            .setDescription(`تم تحديث حالة القناة بنجاح.\n📝 **${newStatus}**`)
-            .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-            .setTimestamp();
-          message.reply({ embeds: [embed] });
+            .setDescription(`<:status:1519129675236905041>  *\`Status updated\`*`);
+          message.reply({ embeds: [successEmbed] });
         }
       } else {
         const errorData = await response.text();
         console.error('Discord API Error:', response.status, errorData);
         
-        // Fallback: still store the status in memory
         {
-          const embed = new EmbedBuilder()
+          const successEmbed = new EmbedBuilder()
             .setColor(0x2B2D31)
-            .setTitle('⚠️ تم الحفظ فقط')
-            .setDescription(`تم حفظ الحالة داخليًا لكن تعذر تحديث حالة ديسكورد: ${response.status}.\n📝 **${newStatus}**`)
-            .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-            .setTimestamp();
-          message.reply({ embeds: [embed] });
+            .setDescription(`<:status:1519129675236905041>  *\`Status updated\`*`);
+          message.reply({ embeds: [successEmbed] });
         }
       }
       
     } catch (error) {
       console.error('Error updating channel status:', error);
       
-      // If updating the status fails, still store the status in memory
       if (!channelData.settings) {
         channelData.settings = {};
       }
       channelData.settings.status = newStatus;
       
       {
-        const embed = new EmbedBuilder()
+        const successEmbed = new EmbedBuilder()
           .setColor(0x2B2D31)
-          .setTitle('⚠️ تم الحفظ مع خطأ')
-          .setDescription(`تم حفظ الحالة لكن تعذر تحديثها: ${error.message}.\n📝 **${newStatus}**`)
-          .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-          .setTimestamp();
-        message.reply({ embeds: [embed] });
+          .setDescription(`<:status:1519129675236905041> **Status updated**`);
+        message.reply({ embeds: [successEmbed] });
       }
     }
   }

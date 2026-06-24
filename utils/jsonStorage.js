@@ -17,7 +17,7 @@ async function ensureDB() {
   }
 }
 
-// Warm cache from MongoDB (non-blocking)
+// Warm cache from MongoDB — called once during bot startup
 async function hydrateChannelsCache() {
   const dbRef = await ensureDB();
   if (!dbRef) return;
@@ -28,7 +28,6 @@ async function hydrateChannelsCache() {
     console.error('Error hydrating channels cache:', error);
   }
 }
-hydrateChannelsCache();
 
 function loadChannels() {
   return channelsCache || {};
@@ -66,9 +65,42 @@ function objectToMap(obj) {
   return map;
 }
 
+async function fetchAllChannelsFromDB() {
+  const dbRef = await ensureDB();
+  if (!dbRef) return {};
+  try {
+    const doc = await dbRef.collection('bot_state').findOne({ key: 'temp_channels' });
+    return doc?.value || {};
+  } catch (error) {
+    console.error('[ChannelSync] Error fetching channels from DB:', error.message);
+    return {};
+  }
+}
+
+async function removeChannelFromDB(channelId) {
+  const dbRef = await ensureDB();
+  if (!dbRef) return;
+  try {
+    const doc = await dbRef.collection('bot_state').findOne({ key: 'temp_channels' });
+    if (doc?.value?.[channelId]) {
+      delete doc.value[channelId];
+      await dbRef.collection('bot_state').updateOne(
+        { key: 'temp_channels' },
+        { $set: { value: doc.value, updatedAt: new Date() } }
+      );
+      delete channelsCache[channelId];
+    }
+  } catch (error) {
+    console.error('[ChannelSync] Error removing channel from DB:', error.message);
+  }
+}
+
 module.exports = {
   loadChannels,
   saveChannels,
   mapToObject,
-  objectToMap
+  objectToMap,
+  fetchAllChannelsFromDB,
+  removeChannelFromDB,
+  hydrateChannelsCache
 };

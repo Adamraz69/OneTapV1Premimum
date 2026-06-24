@@ -112,6 +112,9 @@ const emptySince = new Map();
 // Track pending channel deletions so Cancel can actually stop them
 const pendingDeletes = new Map();
 
+// Track pending user input actions (invite/permit/reject)
+const pendingActions = new Map();
+
 
 // global unhandled error handlers (in case they're not already registered)
 process.on('unhandledRejection', (err) => logger.error('UnhandledRejection', err));
@@ -296,7 +299,7 @@ const commandAliases = {
   'st': 'status',
   'tr': 'transfer',
   'p': 'permit-role',
-  'r': 'reject-role',
+  'rr': 'reject-role',
   's': 'save',
   'm': 'mute',
   'u': 'unmute',
@@ -304,7 +307,8 @@ const commandAliases = {
   'offst': 'cam-off',
   'n': 'name',
   'ur': 'unreject',
-  'k': 'kick'
+  'k': 'kick',
+  'r': 'reject'
 };
 
 // Add more specific aliases as needed
@@ -487,6 +491,87 @@ client.on('messageCreate', async (message) => {
   }
 });
 
+// Global message handler for pendingActions (invite/permit/reject)
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  const pending = pendingActions.get(message.author.id);
+  if (!pending) return;
+  clearTimeout(pending.timeout);
+  pendingActions.delete(message.author.id);
+
+  let target = message.mentions.users.first();
+  if (!target) {
+    target = message.guild.members.cache.find(
+      m =>
+        m.displayName.toLowerCase().includes(message.content.toLowerCase()) ||
+        m.user.username.toLowerCase().includes(message.content.toLowerCase())
+    )?.user;
+  }
+  if (!target) {
+    return message.reply({ content: '❌ Could not find that member!', ephemeral: true }).catch(() => {}).then(() => {
+      setTimeout(() => message.delete().catch(() => {}), 3000);
+      pending.msg?.delete().catch(() => {});
+    });
+  }
+
+  const guild = message.guild;
+  const member = await guild.members.fetch(message.author.id).catch(() => null);
+  if (!member) return;
+  const curVC = member.voice?.channel;
+  if (!curVC || !tempChannels.has(curVC.id)) {
+    message.reply({ content: '❌ You are no longer in the voice channel!', ephemeral: true }).catch(() => {}).then(() => {
+      setTimeout(() => message.delete().catch(() => {}), 3000);
+      pending.msg?.delete().catch(() => {});
+    });
+    return;
+  }
+  const curData = tempChannels.get(curVC.id);
+  if (curData.ownerId !== message.author.id) {
+    message.reply({ content: '❌ You are no longer the owner!', ephemeral: true }).catch(() => {}).then(() => {
+      setTimeout(() => message.delete().catch(() => {}), 3000);
+      pending.msg?.delete().catch(() => {});
+    });
+    return;
+  }
+
+  try {
+    if (pending.type === 'invite') {
+      if (!curData.allowedUsers) curData.allowedUsers = [];
+      if (curData.allowedUsers.includes(target.id)) {
+        message.reply({ content: '⚠️ Already invited!', ephemeral: true }).catch(() => {}).then(() => setTimeout(() => message.delete().catch(() => {}), 3000));
+        return;
+      }
+      if (curData.rejectedUsers?.includes(target.id)) curData.rejectedUsers = curData.rejectedUsers.filter(id => id !== target.id);
+      curData.allowedUsers.push(target.id);
+      await curVC.permissionOverwrites.edit(target.id, { Connect: true, ViewChannel: true, Speak: true, SendMessages: true, ReadMessageHistory: true, UseVAD: true });
+      message.reply({ content: `<:invite:1519126235345588244> **Invited** <@${target.id}>`, ephemeral: true }).catch(() => {});
+    } else if (pending.type === 'permit') {
+      if (curData.rejectedUsers?.includes(target.id)) curData.rejectedUsers = curData.rejectedUsers.filter(id => id !== target.id);
+      if (!curData.allowedUsers) curData.allowedUsers = [];
+      if (!curData.allowedUsers.includes(target.id)) curData.allowedUsers.push(target.id);
+      await curVC.permissionOverwrites.edit(target.id, { Connect: true, ViewChannel: true, Speak: true });
+      message.reply({ content: `<:permit:1519126533975965797> **Permitted** <@${target.id}>`, ephemeral: true }).catch(() => {});
+    } else if (pending.type === 'reject') {
+      if (!curData.rejectedUsers) curData.rejectedUsers = [];
+      if (!curData.rejectedUsers.includes(target.id)) curData.rejectedUsers.push(target.id);
+      if (curData.allowedUsers?.includes(target.id)) curData.allowedUsers = curData.allowedUsers.filter(id => id !== target.id);
+      await curVC.permissionOverwrites.edit(target.id, { Connect: false }).catch(() => {});
+      if (curData.textChannelId) {
+        const txtChan = client.channels.cache.get(curData.textChannelId);
+        if (txtChan) await txtChan.permissionOverwrites.delete(target.id).catch(() => {});
+      }
+      const targetMember = curVC.members.get(target.id);
+      if (targetMember) targetMember.voice.disconnect().catch(() => {});
+      message.reply({ content: `<:reject:1519126684958457957> **Rejected** <@${target.id}>`, ephemeral: true }).catch(() => {});
+    }
+  } catch (e) {
+    message.reply({ content: `❌ Error: ${e.message}`, ephemeral: true }).catch(() => {});
+  }
+
+  message.delete().catch(() => {});
+  pending.msg?.delete().catch(() => {});
+});
+
 client.on('voiceStateUpdate', async (oldState, newState) => {
   // Check if the user joined a temporary voice channel
   if (newState.channel && tempChannels.has(newState.channel.id)) {
@@ -597,6 +682,17 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         }
       }
 
+      // ── Welcome message when someone joins (only in rooms with <10 members) ──
+      if (!isOwner && newState.channel.members.size < 10) {
+        try {
+          const joinEmbed = new EmbedBuilder()
+            .setColor(0x2B2D31)
+            .setDescription(`> 👋 **${newState.member.displayName}** joined **${newState.channel.name}**!\n> <@${channelData.ownerId}> welcome them with love 💝`)
+            .setFooter({ text: 'Together in friendship and harmony 🤝', iconURL: newState.guild.iconURL({ dynamic: true }) });
+          await newState.channel.send({ embeds: [joinEmbed] });
+        } catch (_) {}
+      }
+
       // ── Notify ONLY the channel owner in TEMP-HELP (not every member who joins) ──
       const isChannelOwner = channelData.ownerId === newState.member.id;
       if (isChannelOwner) {
@@ -658,10 +754,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             }
           }
 
-          // Text Access: Remove for EVERYONE except owner when they leave (including whitelist/allowed)
+          // Text Access: Remove for everyone except whitelisted/allowed when they leave
           if (channelData.textChannelId) {
             const txtChan = oldState.guild.channels.cache.get(channelData.textChannelId);
-            if (txtChan) {
+            if (txtChan && !isAllowed && !isWhitelisted) {
               const txtPerm = txtChan.permissionOverwrites.cache.get(oldState.member.id);
               if (txtPerm) {
                  await txtPerm.delete().catch(() => {});
@@ -877,7 +973,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
               await tempChannel.permissionOverwrites.edit(process.env.TEMP_ROOM_ROLE_ID, {
                 Connect: false
               });
-              channelData.settings.status = '<:lock:1452014333965111398>  ** Room Masdoda**';
+              channelData.settings.status = '<:lock:1518716352456687697>  ** Room Masdoda**';
             }
           } catch (e) {
             logger.error('Error applying saved lock setting:', e);
@@ -899,6 +995,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       }
 
       tempChannels.set(tempChannel.id, channelData);
+      tempChannelsObj = mapToObject(tempChannels);
+      saveChannels(tempChannelsObj);
 
       // Set default status for the new temporary channel
       try {
@@ -927,147 +1025,86 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         console.error('Error setting default status:', error);
       }
 
-      // ── Welcome Message (Dynamic Layout Components V2) ─────────────────────────
-      const arrow = '<a:wisdoarrow:1453486894779338885>';
+      // ── Welcome Panel (Buttons + Footer only) ────────────────────────────────
       const crown = '<a:12104crownpink:1449139449211387945>';
-      const boost = '<a:boost:1449497847094444083>';
-      
-      let isDiamondOffer = false;
-      let welcomeTitle = "🎉 **Welcome to Your Temporary Room!**";
-      let welcomeAccent = 2829617; // Default Dark Gray
-      let commandList = `${arrow} **Lock:** \`.v lock\`\n${arrow} **Rename:** \`.v name <text>\`\n${arrow} **Limit:** \`.v limit <num>\``;
-      let exclusiveNote = "✦ ・ Use the full control panel for more options.";
-      
+      const displayName = newState.member.displayName;
+
+      let welcomeAccent = 2829617;
+      let welcomeTitle = `🎉 **Welcome ${displayName}**`;
+
       if (isPremium) {
-        isDiamondOffer = true;
-        welcomeTitle = `${crown} **WS TMPV Premium Palace** 🏛️`;
         welcomeAccent = 16766720;
-        commandList = `${boost} **Lock/Hide:** Total Privacy Control\n${boost} **Admin:** \`.v wl / .v permit\`\n${boost} **Power:** \`.v save / .v rename\`\n${boost} **Premium Perk:** \`All features active ⚡\``;
-        exclusiveNote = "👑 ・ Welcome, Premium Member. Your palace is ready.";
+        welcomeTitle = `${crown} **Welcome ${displayName}** 👑`;
       }
 
+      const { getRandomImage } = require('./panel_pic');
+
       const welcomePayload = {
-        flags: 32768, // IS_COMPONENTS_V2
+        flags: 32768,
         components: [
           {
-            type: 17, // CONTAINER
+            type: 17,
             accent_color: welcomeAccent,
             components: [
               {
-                type: 10, // Header
+                type: 12,
+                items: [{ media: { url: getRandomImage() } }]
+              },
+              {
+                type: 10,
                 content: `## ${welcomeTitle}`
               },
               {
-                type: 12, // IMAGE (GIF)
-                items: [{ media: { url: isPremium ? "https://i.postimg.cc/3R5hgh1W/download.gif" : "https://i.postimg.cc/gkY14NCL/image.png" } }]
+                type: 14
               },
               {
-                type: 14 // SEPARATOR
+                type: 1,
+                components: [
+                  { type: 2, style: 2, label: "LOCK", custom_id: "panel_lock", emoji: { id: "1518716352456687697", name: "lock" } },
+                  { type: 2, style: 2, label: "UNLOCK", custom_id: "panel_unlock", emoji: { id: "1518717955871866900", name: "unlock" } },
+                  { type: 2, style: 1, label: "RENAME", custom_id: "panel_rename", emoji: { id: "1518718647651139657", name: "editing" } },
+                  { type: 2, style: 1, label: "LIMIT", custom_id: "panel_limit", emoji: { id: "1518719076464070848", name: "limited" } },
+                  { type: 2, style: 2, label: "HIDE", custom_id: "panel_hide", emoji: { id: "1518719584557989998", name: "hidden" } }
+                ]
               },
               {
-                type: 10, // Content Description
-                content: `### 👋 **Hello <@${newState.member.id}>!**\nYour private space has been successfully established.\n\n**<a:notif:1447321335117123610> Available Controls:**\n${commandList}`
+                type: 1,
+                components: [
+                  { type: 2, style: 2, label: "UNHIDE", custom_id: "panel_unhide", emoji: { id: "1518719584557989998", name: "hidden" } },
+                  { type: 2, style: 3, label: "PANEL", custom_id: "open_panel", emoji: { id: "1518720580294152262", name: "panel" } },
+                  { type: 2, style: 4, label: "KICK ALL", custom_id: "panel_kick_all", emoji: { id: "1518720896502731063", name: "kick" } },
+                  { type: 2, style: 1, label: "TRANSFER", custom_id: "panel_transfer", emoji: { id: "1449141144268308595", name: "org", animated: true } },
+                  { type: 2, style: 4, label: "DELETE", custom_id: "panel_delete", emoji: { id: "1518723074231632034", name: "delete" } }
+                ]
               },
               {
-                type: 14 // SEPARATOR
+                type: 14
               },
               {
-                type: 9, // SECTION with Accessory Button
-                components: [{ type: 10, content: exclusiveNote }],
-                accessory: {
-                  type: 2,
-                  style: isPremium ? 3 : 2, // Success (Green) for Premium, Gray for Regular
-                  label: "Control Panel",
-                  custom_id: "open_panel",
-                  emoji: { name: "🎛️" }
-                }
+                type: 1,
+                components: [
+                  { type: 2, style: 5, label: "report person/issue", url: "https://discord.com/channels/1201626435958354021/1352049837742231573" }
+                ]
               },
               {
-                type: 14 // SEPARATOR
-              },
-              {
-                type: 10, // FOOTER
-                content: "Wisdom Premium Systems 📩 | “Quality means doing it right when no one is looking.”"
+                type: 10,
+                content: isPremium
+                  ? "WS TMPV Premium • Palace Control Active"
+                  : "Wisdom TMPV • Use `.v help` for more commands"
               }
             ]
           }
         ]
       };
 
-      // Send the advanced V2 layout message (skip for Offer3)
-      if (!isDiamondOffer) {
+      await client.rest.post(Routes.channelMessages(tempChannel.id), { body: welcomePayload }).catch(async (err) => {
+        console.error('Error sending welcome panel:', err);
         try {
-          await client.rest.post(Routes.channelMessages(tempChannel.id), { body: welcomePayload });
-        } catch (welcomeErr) {
-          console.error('Error sending V2 welcome message:', welcomeErr);
-          // Fallback to standard embed if V2 fails
           await tempChannel.send({
-            content: `Welcome <@${newState.member.id}>! Your channel is ready. Use \`.v help\` for commands.`
+            content: `Welcome <@${newState.member.id}>! Use \`.v help\` for commands.`
           });
-        }
-      }
-
-      // Offer3 exclusive announcement inside the voice-channel chat
-      if (isDiamondOffer) {
-        const diamondOfferPayload = {
-          flags: 32768, // IS_COMPONENTS_V2
-          components: [
-            {
-              type: 17, // CONTAINER
-              accent_color: 16766720, // Gold styling as requested
-              components: [
-                {
-                  type: 12, // Luxury banner
-                  items: [{ media: { url: "https://i.postimg.cc/JhBHMDvp/download.gif" } }]
-                },
-                {
-                  type: 10,
-                  content: `## <a:12104crownpink:1449139449211387945> **Diamond Offer III Active**\n\nWelcome <@${newState.member.id}>.\n✅ Your private text channel has been created successfully.`
-                },
-                {
-                  type: 14 // SEPARATOR
-                },
-                {
-                  type: 10,
-                  content: `### 💠 Perks\n${arrow} Zero Cooldowns\n${arrow} Palace Name\n${arrow} Anti-Claim Shield`
-                },
-                {
-                  type: 14 // SEPARATOR
-                },
-                {
-                  type: 10,
-                  content: `### 🧭 Quick Commands\n${boost} \`.v panel\`\n${boost} \`.v myoffer\`\n${boost} \`.v whitelist @user\``
-                },
-                {
-                  type: 14 // SEPARATOR
-                },
-                {
-                  type: 9, // SECTION + button
-                  components: [{ type: 10, content: `✨ **Luxury Control Console ready.**\nUse the button to open your panel instantly.` }],
-                  accessory: {
-                    type: 2,
-                    style: 2,
-                    label: "Open Diamond Panel",
-                    custom_id: "open_panel",
-                    emoji: { name: "👑" }
-                  }
-                },
-                {
-                  type: 14 // SEPARATOR
-                },
-                {
-                  type: 10,
-                  content: `👑 Tip: Use \`.v panel\` for full control.`
-                }
-              ]
-            }
-          ]
-        };
-
-        await client.rest.post(Routes.channelMessages(tempChannel.id), { body: diamondOfferPayload }).catch((err) => {
-          console.error('Error sending Offer3 announcement:', err);
-        });
-      }
+        } catch (_) {}
+      });
 
     } catch (error) {
       console.error('Error creating temporary channel:', error);
@@ -1079,7 +1116,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
 // Handle button interactions and select menus
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
+  if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isRoleSelectMenu()) return;
 
   // Add error handling wrapper
   try {
@@ -1338,7 +1375,6 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
 
-      // Check owner
       if (channelData.ownerId !== interaction.user.id) {
         return interaction.reply({
           content: '> <a:warning_animated:1361729714259099809> **You are not the owner of this channel!**',
@@ -1354,17 +1390,17 @@ client.on('interactionCreate', async (interaction) => {
       const userLimit = voiceChannel.userLimit || 'Unlimited';
 
       const controlPanelEmbed = new EmbedBuilder()
-        .setTitle('🎛️ **CONTROL PANEL**')
+        .setTitle('<:panel:1518720580294152262> **CONTROL PANEL**')
         .setDescription(`
           > **<a:boost:1449497847094444083> Channel Information:**
           
           <a:org:1449141144268308595> **Owner:** <@${channelData.ownerId}>
-          <:voice6:1358152460979404992> **Name:** \`${voiceChannel.name}\`
-          <:voice4:1358152468273430718> **Limit:** \`${userLimit}\`
+          <:editing:1518718647651139657> **Name:** \`${voiceChannel.name}\`
+          <:limited:1518719076464070848> **Limit:** \`${userLimit}\`
           <:voice2:1358152471687467228> **Members:** \`${memberCount}\`
           
           > **<a:notif:1447321335117123610> Status:**
-          ${isLocked ? '<:voice3:1358152470081175622> **Locked**' : '<:voice1:1358152473403195555> **Unlocked**'} | ${isHidden ? '<a:Red_Eye:1450210370487718071> **Hidden**' : '<a:Eyes:1450279319971823789> **Visible**'}
+          ${isLocked ? '<:lock:1518716352456687697> **Locked**' : '<:unlock:1518717955871866900> **Unlocked**'} | ${isHidden ? '<:hidden:1518719584557989998> **Hidden**' : '<:hidden:1518719584557989998> **Visible**'}
         `)
         .setColor(0x2B2D31)
         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
@@ -1373,121 +1409,278 @@ client.on('interactionCreate', async (interaction) => {
 
       const row1 = new ActionRowBuilder()
         .addComponents(
-          new ButtonBuilder().setCustomId('panel_lock').setLabel('LOCK').setEmoji('<:voice3:1358152470081175622>').setStyle(isLocked ? ButtonStyle.Success : ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('panel_unlock').setLabel('UNLOCK').setEmoji('<:voice1:1358152473403195555>').setStyle(!isLocked ? ButtonStyle.Success : ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('panel_rename').setLabel('RENAME').setEmoji('<:voice6:1358152460979404992>').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('panel_limit').setLabel('LIMIT').setEmoji('<:voice4:1358152468273430718>').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('panel_hide').setLabel('HIDE').setEmoji('<a:Red_Eye:1450210370487718071>').setStyle(isHidden ? ButtonStyle.Success : ButtonStyle.Secondary)
+          new ButtonBuilder().setCustomId('panel_lock').setLabel('LOCK').setEmoji('<:lock:1518716352456687697>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_unlock').setLabel('UNLOCK').setEmoji('<:unlock:1518717955871866900>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_hide').setLabel('HIDE').setEmoji('<:hidden:1518719584557989998>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_unhide').setLabel('UNHIDE').setEmoji('<:hidden:1518719584557989998>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_limit').setLabel('LIMIT').setEmoji('<:limited:1518719076464070848>').setStyle(ButtonStyle.Secondary)
         );
 
       const row2 = new ActionRowBuilder()
         .addComponents(
-          new ButtonBuilder().setCustomId('panel_unhide').setLabel('UNHIDE').setEmoji('<a:Eyes:1450279319971823789>').setStyle(!isHidden ? ButtonStyle.Success : ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('panel_kick_all').setLabel('KICK ALL').setEmoji('<a:sssss:1450241657261002864>').setStyle(ButtonStyle.Danger),
-          new ButtonBuilder().setCustomId('panel_transfer').setLabel('TRANSFER').setEmoji('<a:12104crownpink:1449139449211387945>').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('panel_info').setLabel('INFO').setEmoji('<:voice2:1358152471687467228>').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('panel_delete').setLabel('DELETE').setEmoji('<:trash:1450280880881930341>').setStyle(ButtonStyle.Danger)
+          new ButtonBuilder().setCustomId('panel_rename').setLabel('RENAME').setEmoji('<:editing:1518718647651139657>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_kick').setLabel('KICK').setEmoji('<:kick:1518720896502731063>').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId('panel_transfer').setLabel('TRANSFER').setEmoji('<a:org:1449141144268308595>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_claim').setLabel('CLAIM').setEmoji('<:claim:1519125614790049975>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_delete').setLabel('DELETE').setEmoji('<:delete:1518723074231632034>').setStyle(ButtonStyle.Danger)
+        );
+
+      const row3 = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder().setCustomId('panel_invite').setLabel('INVITE').setEmoji('<:invite:1519126235345588244>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_permit').setLabel('PERMIT').setEmoji('<:permit:1519126533975965797>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_reject').setLabel('REJECT').setEmoji('<:reject:1519126684958457957>').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId('panel_permitrole').setLabel('PERMIT ROLE').setEmoji('<:permit_role:1519127059044106300>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_rejectrole').setLabel('REJECT ROLE').setEmoji('<:reject_role:1519127329857605642>').setStyle(ButtonStyle.Danger)
+        );
+
+      const row4 = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder().setCustomId('panel_sbon').setLabel('SB ON').setEmoji('<:soundboard_on:1519128003408429186>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_sboff').setLabel('SB OFF').setEmoji('<:soundboard_off:1519128206429388970>').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId('panel_camon').setLabel('CAM ON').setEmoji('<:cam_on:1519128767065227284>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_camoff').setLabel('CAM OFF').setEmoji('<:cam_off:1519128975664873663>').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId('panel_activity').setLabel('ACTIVITY').setEmoji('<:activity:1519129435536752850>').setStyle(ButtonStyle.Secondary)
+        );
+
+      const row5 = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder().setCustomId('panel_owner').setLabel('OWNER').setEmoji('<:claim:1519125614790049975>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_status').setLabel('STATUS').setEmoji('<:status:1519129675236905041>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_vcinfo').setLabel('VC INFO').setEmoji('<:voice2:1358152471687467228>').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('panel_info').setLabel('INFO').setEmoji('<:voice2:1358152471687467228>').setStyle(ButtonStyle.Secondary)
         );
 
       await interaction.reply({
         embeds: [controlPanelEmbed],
-        components: [row1, row2],
+        components: [row1, row2, row3, row4, row5],
         ephemeral: true
       });
     }
 
-    if (interaction.customId === 'translate_darija') {
-      const darijaEmbed = new EmbedBuilder()
-        .setTitle('🎉 **مرحباً بك في قناتك الصوتية الخاصة!**')
-        .setColor(0x2B2D31)
-        .setAuthor({
-          name: 'Wisdom TEMP System',
-          iconURL: client.user.displayAvatarURL()
-        })
-        .setDescription(`
-          > **<a:boost:1449497847094444083> أهلاً بك <@${interaction.user.id}>!**
-          
-          تم إنشاء قناتك بنجاح. عندك التحكم الكامل فيها باستخدام الأزرار ولا الأوامر.
+    // ── New Panel Handlers ────────────────────────────────────────────────
 
-          **<a:notif:1447321335117123610> أوامر سريعة:**
+    // KICK: member select menu
+    if (interaction.customId === 'panel_kick') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      const { voiceChannel } = result;
+      const members = voiceChannel.members.filter(m => m.id !== interaction.user.id && !m.user.bot);
+      if (members.size === 0) return interaction.reply({ content: '<:kick:1518720896502731063> No members to kick!', ephemeral: true });
+      const { StringSelectMenuBuilder, ActionRowBuilder } = require('discord.js');
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('panel_kick_select')
+        .setPlaceholder('Select a member to kick...')
+        .addOptions(members.map(m => ({ label: m.displayName, value: m.id, emoji: '<:kick:1518720896502731063>' })));
+      await interaction.reply({ content: '<:kick:1518720896502731063> Select a member to kick:', components: [new ActionRowBuilder().addComponents(selectMenu)], ephemeral: true });
+    }
 
-          > **<:voice3:1358152470081175622> قفل:** \`.v lock\`
-          > **<:voice1:1358152473403195555> فتح:** \`.v unlock\`
-          > **<:voice6:1358152460979404992> سمية:** \`.v name <text>\`
-          > **<:voice4:1358152468273430718> ليميت:** \`.v limit <number>\`
-          > **<a:Red_Eye:1450210370487718071> تخبية:** \`.v hide\`
-          
-          *استخدم \`.v help\` للمزيد من المعلومات.*
-        `)
-        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
+    if (interaction.customId === 'panel_kick_select') {
+      await interaction.deferReply({ ephemeral: true });
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return interaction.editReply({ content: '<:kick:1518720896502731063> You must be in the channel!' });
+      const { voiceChannel, channelData } = result;
+      const targetId = interaction.values[0];
+      const target = voiceChannel.members.get(targetId);
+      if (!target) return interaction.editReply({ content: '<:kick:1518720896502731063> Member not found in channel!' });
+      try {
+        await target.voice.disconnect();
+        if (channelData.allowedUsers) channelData.allowedUsers = channelData.allowedUsers.filter(id => id !== targetId);
+        interaction.editReply({ content: `<:kick:1518720896502731063> Kicked <@${targetId}>` });
+      } catch { interaction.editReply({ content: '<:kick:1518720896502731063> Failed to kick member!' }); }
+    }
 
-      const backRow = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId('translate_english')
-            .setLabel('Back to English')
-            .setStyle(ButtonStyle.Primary)
-            .setEmoji('🇺🇸'),
-          new ButtonBuilder()
-            .setCustomId('translate_amazigh')
-            .setLabel('Translate to Amazigh')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji('<:tamazight:1328392111963504771>')
-        );
+    // CLAIM
+    if (interaction.customId === 'panel_claim') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      const channelData = tempChannels.get(voiceChannel.id);
+      if (!channelData) return interaction.reply({ content: '❌ This is not a temporary channel!', ephemeral: true });
+      if (channelData.ownerId === interaction.user.id) return interaction.reply({ content: '❌ You are already the owner!', ephemeral: true });
+      if (voiceChannel.members.has(channelData.ownerId)) return interaction.reply({ content: '❌ The owner is still in the channel!', ephemeral: true });
 
-      await interaction.update({
-        embeds: [darijaEmbed],
-        components: [backRow]
+      const { isPremiumMember } = require('./utils/premiumStorage');
+      let ownerPremium = channelData.isPremium || null;
+      if (!ownerPremium && channelData.ownerId) ownerPremium = await isPremiumMember(channelData.ownerId);
+      if (ownerPremium) return interaction.reply({ content: '❌ Cannot claim — channel is Premium protected!', ephemeral: true });
+
+      await voiceChannel.permissionOverwrites.edit(interaction.user.id, { Connect: true, ViewChannel: true, Stream: true, Speak: true, UseVAD: true, PrioritySpeaker: true });
+      await voiceChannel.permissionOverwrites.edit(channelData.ownerId, { ManageChannels: false, PrioritySpeaker: false }).catch(() => {});
+      channelData.ownerId = interaction.user.id;
+      delete channelData.ownerLeftAt;
+
+      const { EmbedBuilder } = require('discord.js');
+      interaction.reply({
+        embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle('<:claim:1519125614790049975> Channel Claimed').setDescription('Channel claimed successfully!').addFields({ name: '🎤 Channel', value: voiceChannel.name, inline: true }, { name: '👤 New Owner', value: `<@${interaction.user.id}>`, inline: true }).setThumbnail(interaction.user.displayAvatarURL({ dynamic: true })).setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() }).setTimestamp()],
+        ephemeral: true
       });
     }
 
-    if (interaction.customId === 'translate_amazigh') {
-      const amazighEmbed = new EmbedBuilder()
-        .setTitle('🎉 **ⴰⵙⵓⴷⵓ ⵖⵔ ⵓⵙⴰⵔⴰⴳ ⵏ ⵜⵎⵙⵉⵡⵍⵜ!**')
-        .setColor(0x2B2D31)
-        .setAuthor({
-          name: 'Wisdom TEMP System',
-          iconURL: client.user.displayAvatarURL()
-        })
-        .setDescription(`
-          > **<a:boost:1449497847094444083> ⴰⵣⵓⵍ <@${interaction.user.id}>!**
-          
-          ⵉⵜⵜⵓⵙⴽⴰⵔ ⵓⵙⴰⵔⴰⴳ ⵏⵏⴽ ⵙ ⵜⵎⴰⵎⵜ. ⵜⵣⵎⵔⴷ ⴰⴷ ⵜⵙⵏⵓⴱⴳⴷ ⴰⵙⴰⵔⴰⴳ ⵏⵏⴽ.
+    // INVITE: text chat collector for mention/name
+    if (interaction.customId === 'panel_invite') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      await interaction.reply({ content: '<:invite:1519126235345588244> **Mention or type the member\'s name in chat within 15 seconds.**', ephemeral: true });
+      const timeout = setTimeout(() => {
+        if (pendingActions.has(interaction.user.id)) {
+          pendingActions.delete(interaction.user.id);
+          interaction.followUp({ content: '⏰ **Time\'s up!**', ephemeral: true }).catch(() => {});
+        }
+      }, 15000);
+      pendingActions.set(interaction.user.id, { type: 'invite', timeout });
+    }
 
-          **<a:notif:1447321335117123610> ⵜⵉⵏⵏⴰ ⵏ ⵓⵙⴽⵔ ⵜⵉⵎⵣⵡⵓⵔⴰ:**
+    // PERMIT: pendingActions approach
+    if (interaction.customId === 'panel_permit') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      await interaction.reply({ content: '<:permit:1519126533975965797> **Mention or type the member\'s name in chat within 15 seconds.**', ephemeral: true });
+      const timeout = setTimeout(() => {
+        if (pendingActions.has(interaction.user.id)) {
+          pendingActions.delete(interaction.user.id);
+          interaction.followUp({ content: '⏰ **Time\'s up!**', ephemeral: true }).catch(() => {});
+        }
+      }, 15000);
+      pendingActions.set(interaction.user.id, { type: 'permit', timeout });
+    }
 
-          > **<:voice3:1358152470081175622> ⵔⴳⵍ:** \`.v lock\`
-          > **<:voice1:1358152473403195555> ⵍⴷⵉ:** \`.v unlock\`
-          > **<:voice6:1358152460979404992> ⵉⵙⵎ:** \`.v name <text>\`
-          > **<:voice4:1358152468273430718> ⵓⵟⵟⵓⵏ:** \`.v limit <number>\`
-          > **<a:Red_Eye:1450210370487718071> ⵙⵏⵜⵍ:** \`.v hide\`
-          
-          *ⵙⵎⵔⵙ \`.v help\` ⵃⵎⴰ ⴰⴷ ⵜⵙⴽⵏⴷ ⴰⴽⴽ ⵜⵉⵏⵏⴰ.*
-        `)
-        .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
+    // REJECT: pendingActions approach
+    if (interaction.customId === 'panel_reject') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      await interaction.reply({ content: '<:reject:1519126684958457957> **Mention or type the member\'s name in chat within 15 seconds.**', ephemeral: true });
+      const timeout = setTimeout(() => {
+        if (pendingActions.has(interaction.user.id)) {
+          pendingActions.delete(interaction.user.id);
+          interaction.followUp({ content: '⏰ **Time\'s up!**', ephemeral: true }).catch(() => {});
+        }
+      }, 15000);
+      pendingActions.set(interaction.user.id, { type: 'reject', timeout });
+    }
 
-      const backRow = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId('translate_english')
-            .setLabel('Back to English')
-            .setStyle(ButtonStyle.Primary)
-            .setEmoji('🇺🇸'),
-          new ButtonBuilder()
-            .setCustomId('translate_darija')
-            .setLabel('Translate to Darija')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji('🇲🇦')
-        );
+    // PERMIT ROLE: role select menu
+    if (interaction.customId === 'panel_permitrole') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      const { voiceChannel } = result;
+      const { RoleSelectMenuBuilder, ActionRowBuilder } = require('discord.js');
+      const roleMenu = new RoleSelectMenuBuilder().setCustomId('panel_permitrole_select').setPlaceholder('Select a role...');
+      await interaction.reply({ content: '<:permit_role:1519127059044106300> Select a role to permit:', components: [new ActionRowBuilder().addComponents(roleMenu)], ephemeral: true });
+    }
 
-      await interaction.update({
-        embeds: [amazighEmbed],
-        components: [backRow]
+    if (interaction.customId === 'panel_permitrole_select') {
+      await interaction.deferReply({ ephemeral: true });
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return interaction.editReply({ content: '❌ You must be in the voice channel!' });
+      const { voiceChannel } = result;
+      const roleId = interaction.values[0];
+      await voiceChannel.permissionOverwrites.edit(roleId, { Connect: true, ViewChannel: true, Speak: true });
+      interaction.editReply({ content: `<:permit_role:1519127059044106300> Permitted role <@&${roleId}>` });
+    }
+
+    // REJECT ROLE: role select menu
+    if (interaction.customId === 'panel_rejectrole') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      const { RoleSelectMenuBuilder, ActionRowBuilder } = require('discord.js');
+      const roleMenu = new RoleSelectMenuBuilder().setCustomId('panel_rejectrole_select').setPlaceholder('Select a role...');
+      await interaction.reply({ content: '<:reject_role:1519127329857605642> Select a role to reject:', components: [new ActionRowBuilder().addComponents(roleMenu)], ephemeral: true });
+    }
+
+    if (interaction.customId === 'panel_rejectrole_select') {
+      await interaction.deferReply({ ephemeral: true });
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return interaction.editReply({ content: '❌ You must be in the voice channel!' });
+      const { voiceChannel } = result;
+      const roleId = interaction.values[0];
+      await voiceChannel.permissionOverwrites.edit(roleId, { Connect: false });
+      interaction.editReply({ content: `<:reject_role:1519127329857605642> Rejected role <@&${roleId}>` });
+    }
+
+    // OWNER: info embed
+    if (interaction.customId === 'panel_owner') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      const channelData = tempChannels.get(voiceChannel.id);
+      if (!channelData) return interaction.reply({ content: '❌ This is not a temporary channel!', ephemeral: true });
+      const owner = await client.users.fetch(channelData.ownerId).catch(() => null);
+      if (!owner) return interaction.reply({ content: '❌ Could not fetch owner info!', ephemeral: true });
+      const { EmbedBuilder } = require('discord.js');
+      interaction.reply({
+        embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle('<:claim:1519125614790049975> Channel Owner').setDescription(`<@${channelData.ownerId}>`).addFields({ name: '👤 Username', value: owner.username, inline: true }, { name: '🆔 ID', value: owner.id, inline: true }).setThumbnail(owner.displayAvatarURL({ dynamic: true })).setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() }).setTimestamp()],
+        ephemeral: true
       });
+    }
+
+    // STATUS: modal
+    if (interaction.customId === 'panel_status') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
+      const modal = new ModalBuilder().setCustomId('panel_status_modal').setTitle('Change Channel Status');
+      const statusInput = new TextInputBuilder().setCustomId('panel_status_text').setLabel('New status (max 100 chars)').setStyle(TextInputStyle.Short).setMinLength(1).setMaxLength(100).setPlaceholder('Enter new status...').setRequired(true);
+      modal.addComponents(new ActionRowBuilder().addComponents(statusInput));
+      await interaction.showModal(modal);
+    }
+
+    // VC INFO: embed
+    if (interaction.customId === 'panel_vcinfo') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      const memberCount = voiceChannel.members.size;
+      const userLimit = voiceChannel.userLimit || 'Unlimited';
+      const bitrate = voiceChannel.bitrate / 1000;
+      const membersList = voiceChannel.members.map(m => `<@${m.id}>`).join('\n') || 'No members';
+      const channelData = tempChannels.get(voiceChannel.id);
+      const channelStatus = channelData?.settings?.status || 'None';
+      const { EmbedBuilder } = require('discord.js');
+      interaction.reply({
+        embeds: [new EmbedBuilder().setColor(0x2B2D31).setTitle('<:voice2:1358152471687467228> Channel Info').addFields({ name: '🎤 Name', value: voiceChannel.name, inline: true }, { name: '👥 Members', value: `${memberCount}`, inline: true }, { name: '<:limited:1518719076464070848> Limit', value: `${userLimit}`, inline: true }, { name: '🎵 Quality', value: `${bitrate} kbps`, inline: true }, { name: '📝 Status', value: channelStatus, inline: false }, { name: '👤 Members', value: membersList, inline: false }).setThumbnail(interaction.guild.iconURL({ dynamic: true })).setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() }).setTimestamp()],
+        ephemeral: true
+      });
+    }
+
+    // SB ON
+    if (interaction.customId === 'panel_sbon') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      if (process.env.TEMP_ROOM_ROLE_ID) await voiceChannel.permissionOverwrites.edit(process.env.TEMP_ROOM_ROLE_ID, { UseSoundboard: true }).catch(() => {});
+      interaction.reply({ content: '<:soundboard_on:1519128003408429186> **Soundboard Activated**', ephemeral: true });
+    }
+
+    // SB OFF
+    if (interaction.customId === 'panel_sboff') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      if (process.env.TEMP_ROOM_ROLE_ID) await voiceChannel.permissionOverwrites.edit(process.env.TEMP_ROOM_ROLE_ID, { UseSoundboard: false }).catch(() => {});
+      interaction.reply({ content: '<:soundboard_off:1519128206429388970> **Soundboard Deactivated**', ephemeral: true });
+    }
+
+    // CAM ON
+    if (interaction.customId === 'panel_camon') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      if (process.env.TEMP_ROOM_ROLE_ID) await voiceChannel.permissionOverwrites.edit(process.env.TEMP_ROOM_ROLE_ID, { Stream: true }).catch(() => {});
+      interaction.reply({ content: '<:cam_on:1519128767065227284> **Camera/Stream Enabled**', ephemeral: true });
+    }
+
+    // CAM OFF
+    if (interaction.customId === 'panel_camoff') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      if (process.env.TEMP_ROOM_ROLE_ID) await voiceChannel.permissionOverwrites.edit(process.env.TEMP_ROOM_ROLE_ID, { Stream: false }).catch(() => {});
+      interaction.reply({ content: '<:cam_off:1519128975664873663> **Camera/Stream Disabled**', ephemeral: true });
+    }
+
+    // ACTIVITY (toggle)
+    if (interaction.customId === 'panel_activity') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
+      const targetRoleId = process.env.TEMP_ROOM_ROLE_ID || interaction.guild.id;
+      const currentPerms = voiceChannel.permissionOverwrites.cache.get(targetRoleId);
+      const canUseActivity = currentPerms?.allow?.has(PermissionFlagsBits.UseEmbeddedActivities) || (!currentPerms?.deny?.has(PermissionFlagsBits.UseEmbeddedActivities) && !currentPerms);
+      await voiceChannel.permissionOverwrites.edit(targetRoleId, { UseEmbeddedActivities: !canUseActivity });
+      interaction.reply({ content: canUseActivity ? '<:activity:1519129435536752850> **Activities Disabled**' : '<:activity:1519129435536752850> **Activities Enabled**', ephemeral: true });
     }
 
     if (interaction.customId === 'translate_english') {
@@ -1506,11 +1699,11 @@ client.on('interactionCreate', async (interaction) => {
 
           **<a:notif:1447321335117123610> Quick Commands:**
 
-          > **<:voice3:1358152470081175622> Lock:** \`.v lock\`
-          > **<:voice1:1358152473403195555> Unlock:** \`.v unlock\`
-          > **<:voice6:1358152460979404992> Rename:** \`.v name <text>\`
-          > **<:voice4:1358152468273430718> Limit:** \`.v limit <number>\`
-          > **<a:Red_Eye:1450210370487718071> Hide:** \`.v hide\`
+          > **<:lock:1518716352456687697> Lock:** \`.v lock\`
+          > **<:unlock:1518717955871866900> Unlock:** \`.v unlock\`
+          > **<:editing:1518718647651139657> Rename:** \`.v name <text>\`
+          > **<:limited:1518719076464070848> Limit:** \`.v limit <number>\`
+          > **<:hidden:1518719584557989998> Hide:** \`.v hide\`
           
           *Use \`.v help\` or click the buttons below for more controls.*
         `)
@@ -1518,23 +1711,16 @@ client.on('interactionCreate', async (interaction) => {
         .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
         .setTimestamp();
 
-      const translationRow = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId('translate_darija')
-            .setLabel('Translate to Darija')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji('🇲🇦'),
-          new ButtonBuilder()
-            .setCustomId('translate_amazigh')
-            .setLabel('Translate to Amazigh')
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji('<:tamazight:1328392111963504771>')
-        );
-
       await interaction.update({
         embeds: [englishEmbed],
-        components: [translationRow]
+        components: [
+          {
+            type: 1,
+            components: [
+              { type: 2, style: 5, label: "report person/issue", url: "https://discord.com/channels/1201626435958354021/1352049837742231573" }
+            ]
+          }
+        ]
       });
     }
 
@@ -1544,7 +1730,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!voiceChannel) {
         return interaction.reply({
-          content: '❌ يجب أن تكون في قناة صوتية لاستخدام هذا الزر!',
+          content: '❌ You must be in a voice channel to use this button!',
           ephemeral: true
         });
       }
@@ -1552,7 +1738,7 @@ client.on('interactionCreate', async (interaction) => {
       const channelData = tempChannels.get(voiceChannel.id);
       if (!channelData || channelData.ownerId !== interaction.user.id) {
         return interaction.reply({
-          content: '❌ يمكن فقط لمالك القناة استخدام هذا الزر!',
+          content: '❌ Only the channel owner can use this button!',
           ephemeral: true
         });
       }
@@ -1573,7 +1759,7 @@ client.on('interactionCreate', async (interaction) => {
             await fetch(`https://discord.com/api/v10/channels/${voiceChannel.id}/voice-status`, {
               method: 'PUT',
               headers: { 'Authorization': `Bot ${client.token}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ status: '<:lock:1452014333965111398>  ** Room Masdoda**' })
+              body: JSON.stringify({ status: '<:lock:1518716352456687697>  ** Room Masdoda**' })
             });
           } catch (e) { }
         } else {
@@ -1584,7 +1770,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       } catch (error) {
         await interaction.reply({
-          content: '❌ حدث خطأ أثناء قفل القناة!',
+          content: '❌ Error locking the channel!',
           ephemeral: true
         });
       }
@@ -1595,7 +1781,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!voiceChannel) {
         return interaction.reply({
-          content: '❌ يجب أن تكون في قناة صوتية لاستخدام هذا الزر!',
+          content: '❌ You must be in a voice channel to use this button!',
           ephemeral: true
         });
       }
@@ -1603,7 +1789,7 @@ client.on('interactionCreate', async (interaction) => {
       const channelData = tempChannels.get(voiceChannel.id);
       if (!channelData || channelData.ownerId !== interaction.user.id) {
         return interaction.reply({
-          content: '❌ يمكن فقط لمالك القناة استخدام هذا الزر!',
+          content: '❌ Only the channel owner can use this button!',
           ephemeral: true
         });
       }
@@ -1635,7 +1821,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       } catch (error) {
         await interaction.reply({
-          content: '❌ حدث خطأ أثناء إلغاء قفل القناة!',
+          content: '❌ Error unlocking the channel!',
           ephemeral: true
         });
       }
@@ -1646,7 +1832,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!voiceChannel) {
         return interaction.reply({
-          content: '❌ يجب أن تكون في قناة صوتية لاستخدام هذا الزر!',
+          content: '❌ You must be in a voice channel to use this button!',
           ephemeral: true
         });
       }
@@ -1654,7 +1840,7 @@ client.on('interactionCreate', async (interaction) => {
       const channelData = tempChannels.get(voiceChannel.id);
       if (!channelData || channelData.ownerId !== interaction.user.id) {
         return interaction.reply({
-          content: '❌ يمكن فقط لمالك القناة استخدام هذا الزر!',
+          content: '❌ Only the channel owner can use this button!',
           ephemeral: true
         });
       }
@@ -1663,15 +1849,15 @@ client.on('interactionCreate', async (interaction) => {
 
       const modal = new ModalBuilder()
         .setCustomId('rename_modal')
-        .setTitle('تغيير اسم القناة');
+        .setTitle('Change Channel Name');
 
       const nameInput = new TextInputBuilder()
         .setCustomId('new_name')
-        .setLabel('الاسم الجديد للقناة')
+        .setLabel('New channel name')
         .setStyle(TextInputStyle.Short)
         .setMinLength(1)
         .setMaxLength(100)
-        .setPlaceholder('أدخل الاسم الجديد...')
+        .setPlaceholder('Enter new name...')
         .setRequired(true);
 
       const firstActionRow = new ActionRowBuilder().addComponents(nameInput);
@@ -1685,7 +1871,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!voiceChannel) {
         return interaction.reply({
-          content: '❌ يجب أن تكون في قناة صوتية لاستخدام هذا الزر!',
+          content: '❌ You must be in a voice channel to use this button!',
           ephemeral: true
         });
       }
@@ -1693,7 +1879,7 @@ client.on('interactionCreate', async (interaction) => {
       const channelData = tempChannels.get(voiceChannel.id);
       if (!channelData || channelData.ownerId !== interaction.user.id) {
         return interaction.reply({
-          content: '❌ يمكن فقط لمالك القناة استخدام هذا الزر!',
+          content: '❌ Only the channel owner can use this button!',
           ephemeral: true
         });
       }
@@ -1715,7 +1901,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       } catch (error) {
         await interaction.reply({
-          content: '❌ حدث خطأ أثناء إخفاء القناة!',
+          content: '❌ Error hiding the channel!',
           ephemeral: true
         });
       }
@@ -1731,11 +1917,11 @@ client.on('interactionCreate', async (interaction) => {
         const targetRoleId = process.env.TEMP_ROOM_ROLE_ID || interaction.guild.id;
         await voiceChannel.permissionOverwrites.edit(targetRoleId, { [PermissionFlagsBits.Connect]: false });
 
-        await setVoiceStatus(voiceChannel.id, client.token, '<:lock:1452014333965111398>  ** Room Masdoda**');
+        await setVoiceStatus(voiceChannel.id, client.token, '<:lock:1518716352456687697>  ** Room Masdoda**');
 
-        await interaction.reply({ content: '> 🔒 **Channel Locked!**', ephemeral: true });
+        await interaction.reply({ content: '> <:lock:1518716352456687697> **Channel Locked!**', ephemeral: true });
       } catch (error) {
-        await interaction.reply({ content: '❌ حدث خطأ أثناء قفل القناة!', ephemeral: true });
+        await interaction.reply({ content: '❌ Error locking the channel!', ephemeral: true });
       }
     }
 
@@ -1750,9 +1936,9 @@ client.on('interactionCreate', async (interaction) => {
 
         await setVoiceStatus(voiceChannel.id, client.token, '**.v help/panel**  <a:FZ_red_cross:1360451122807963770>');
 
-        await interaction.reply({ content: '> 🔓 **Channel Unlocked!**', ephemeral: true });
+        await interaction.reply({ content: '> <:unlock:1518717955871866900> **Channel Unlocked!**', ephemeral: true });
       } catch (error) {
-        await interaction.reply({ content: '❌ حدث خطأ أثناء فتح القناة!', ephemeral: true });
+        await interaction.reply({ content: '❌ Error unlocking the channel!', ephemeral: true });
       }
     }
 
@@ -1761,14 +1947,14 @@ client.on('interactionCreate', async (interaction) => {
       if (!result) return;
 
       const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
-      const modal = new ModalBuilder().setCustomId('panel_rename_modal').setTitle('تغيير اسم القناة');
+      const modal = new ModalBuilder().setCustomId('panel_rename_modal').setTitle('Rename Channel');
       const nameInput = new TextInputBuilder()
         .setCustomId('panel_new_name')
-        .setLabel('الاسم الجديد للقناة')
+        .setLabel('New channel name')
         .setStyle(TextInputStyle.Short)
         .setMinLength(1)
         .setMaxLength(90) // Enforce Safe Limit
-        .setPlaceholder('أدخل الاسم الجديد...')
+        .setPlaceholder('Enter new name...')
         .setRequired(true);
 
       modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
@@ -1780,14 +1966,14 @@ client.on('interactionCreate', async (interaction) => {
       if (!result) return;
 
       const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
-      const modal = new ModalBuilder().setCustomId('panel_limit_modal').setTitle('تحديد عدد الأعضاء');
+      const modal = new ModalBuilder().setCustomId('panel_limit_modal').setTitle('Set Member Limit');
       const limitInput = new TextInputBuilder()
         .setCustomId('panel_user_limit')
-        .setLabel('الحد الأقصى للأعضاء (0-99)')
+        .setLabel('Max members (0-99)')
         .setStyle(TextInputStyle.Short)
         .setMinLength(1)
         .setMaxLength(2)
-        .setPlaceholder('0 = غير محدود')
+        .setPlaceholder('0 = Unlimited')
         .setRequired(true);
 
       modal.addComponents(new ActionRowBuilder().addComponents(limitInput));
@@ -1802,9 +1988,9 @@ client.on('interactionCreate', async (interaction) => {
       try {
         const targetRoleId = process.env.TEMP_ROOM_ROLE_ID || interaction.guild.id;
         await voiceChannel.permissionOverwrites.edit(targetRoleId, { [PermissionFlagsBits.ViewChannel]: false });
-        await interaction.reply({ content: '> 👁️ **Channel Hidden!**', ephemeral: true });
+        await interaction.reply({ content: '> <:hidden:1518719584557989998> **Channel Hidden!**', ephemeral: true });
       } catch (error) {
-        await interaction.reply({ content: '❌ حدث خطأ أثناء إخفاء القناة!', ephemeral: true });
+        await interaction.reply({ content: '❌ Error hiding the channel!', ephemeral: true });
       }
     }
 
@@ -1816,9 +2002,9 @@ client.on('interactionCreate', async (interaction) => {
       try {
         const targetRoleId = process.env.TEMP_ROOM_ROLE_ID || interaction.guild.id;
         await voiceChannel.permissionOverwrites.edit(targetRoleId, { [PermissionFlagsBits.ViewChannel]: true });
-        await interaction.reply({ content: '> 👀 **Channel Visible!**', ephemeral: true });
+        await interaction.reply({ content: '> <:hidden:1518719584557989998> **Channel Visible!**', ephemeral: true });
       } catch (error) {
-        await interaction.reply({ content: '❌ حدث خطأ أثناء إظهار القناة!', ephemeral: true });
+        await interaction.reply({ content: '❌ Error showing the channel!', ephemeral: true });
       }
     }
 
@@ -1838,9 +2024,9 @@ client.on('interactionCreate', async (interaction) => {
             count++;
           } catch (e) { }
         }
-        await interaction.editReply({ content: `👢 تم طرد ${count} عضو بنجاح!` });
+        await interaction.editReply({ content: `<:kick:1518720896502731063> Kicked ${count} member(s) successfully!` });
       } catch (error) {
-        await interaction.editReply({ content: '❌ حدث خطأ أثناء طرد الأعضاء!' });
+        await interaction.editReply({ content: '❌ Error kicking members!' });
       }
     }
 
@@ -1850,15 +2036,15 @@ client.on('interactionCreate', async (interaction) => {
       const { voiceChannel } = result;
 
       const members = voiceChannel.members.filter(m => m.id !== interaction.user.id && !m.user.bot);
-      if (members.size === 0) return interaction.reply({ content: '❌ لا يوجد أعضاء آخرين لنقل الملكية إليهم!', ephemeral: true });
+      if (members.size === 0) return interaction.reply({ content: '❌ No other members to transfer ownership to!', ephemeral: true });
 
       const { StringSelectMenuBuilder, ActionRowBuilder } = require('discord.js');
       const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('panel_transfer_select')
-        .setPlaceholder('اختر العضو الجديد...')
+        .setPlaceholder('Select new owner...')
         .addOptions(members.map(m => ({ label: m.displayName, value: m.id, emoji: '👑' })));
 
-      await interaction.reply({ content: '👑 اختر العضو الجديد:', components: [new ActionRowBuilder().addComponents(selectMenu)], ephemeral: true });
+      await interaction.reply({ content: '<a:org:1449141144268308595> Select the new owner:', components: [new ActionRowBuilder().addComponents(selectMenu)], ephemeral: true });
     }
 
     if (interaction.customId === 'panel_info') {
@@ -1870,12 +2056,12 @@ client.on('interactionCreate', async (interaction) => {
       const perms = voiceChannel.permissionOverwrites.cache.get(targetRoleId);
       const infoEmbed = new EmbedBuilder()
         .setDescription(`
-          <:voice6:1358152460979404992> **Name:** \`${voiceChannel.name}\`
+          <:editing:1518718647651139657> **Name:** \`${voiceChannel.name}\`
           <a:org:1449141144268308595> **Owner:** <@${channelData.ownerId}>
           <:voice2:1358152471687467228> **Members:** \`${voiceChannel.members.size}\`
-          <:voice4:1358152468273430718> **Limit:** \`${voiceChannel.userLimit || 'Unlimited'}\`
-          <:voice3:1358152470081175622> **Status:** ${perms?.deny?.has(PermissionFlagsBits.Connect) ? 'Locked' : 'Unlocked'}
-          <a:loading:1450241657261002864> **Created:** <t:${Math.floor((channelData.createdAt || Date.now()) / 1000)}:R>
+          <:limited:1518719076464070848> **Limit:** \`${voiceChannel.userLimit || 'Unlimited'}\`
+          <:lock:1518716352456687697> **Status:** ${perms?.deny?.has(PermissionFlagsBits.Connect) ? 'Locked' : 'Unlocked'}
+          <:kick:1518720896502731063> **Created:** <t:${Math.floor((channelData.createdAt || Date.now()) / 1000)}:R>
         `)
         .setColor(0x2B2D31)
         .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
@@ -1889,11 +2075,11 @@ client.on('interactionCreate', async (interaction) => {
 
       const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('panel_delete_confirm').setLabel('نعم، احذف القناة').setStyle(ButtonStyle.Danger).setEmoji('🗑️'),
-        new ButtonBuilder().setCustomId('panel_delete_cancel').setLabel('إلغاء').setStyle(ButtonStyle.Secondary).setEmoji('❌')
+        new ButtonBuilder().setCustomId('panel_delete_confirm').setLabel('Yes, delete').setStyle(ButtonStyle.Danger).setEmoji('🗑️'),
+        new ButtonBuilder().setCustomId('panel_delete_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary).setEmoji('❌')
       );
 
-      await interaction.reply({ content: '⚠️ **تحذير!** هل أنت متأكد؟ هذا الإجراء لا يمكن التراجع عنه!', components: [row], ephemeral: true });
+      await interaction.reply({ content: '<:delete:1518723074231632034> **Warning!** Are you sure? This action cannot be undone!', components: [row], ephemeral: true });
     }
 
     // Handle transfer select menu
@@ -1901,13 +2087,13 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
 
       const result = await checkOwnership(interaction, tempChannels);
-      if (!result) return interaction.editReply({ content: '❌ يجب أن تكون في القناة لنقل الملكية!' });
+      if (!result) return interaction.editReply({ content: '❌ You must be in the channel to transfer ownership!' });
       const { voiceChannel, channelData } = result;
 
       const newOwnerId = interaction.values[0];
       const newOwner = await interaction.guild.members.fetch(newOwnerId).catch(() => null);
 
-      if (!newOwner) return interaction.editReply({ content: '❌ تعذر العثور على العضو المختار!' });
+      if (!newOwner) return interaction.editReply({ content: '❌ Could not find the selected member!' });
 
       try {
         // Revoke old owner perms
@@ -1924,9 +2110,9 @@ client.on('interactionCreate', async (interaction) => {
         channelData.ownerId = newOwnerId;
         tempChannels.set(voiceChannel.id, channelData);
 
-        await interaction.editReply({ content: `👑 تم نقل ملكية القناة بنجاح إلى ${newOwner.displayName}!` });
+        await interaction.editReply({ content: `<a:org:1449141144268308595> Ownership transferred to ${newOwner.displayName}!` });
       } catch (error) {
-        await interaction.editReply({ content: '❌ حدث خطأ أثناء نقل الملكية!' });
+        await interaction.editReply({ content: '❌ Error transferring ownership!' });
       }
     }
 
@@ -1935,12 +2121,12 @@ client.on('interactionCreate', async (interaction) => {
       const voiceChannel = interaction.member.voice.channel;
 
       if (!voiceChannel) {
-        return interaction.reply({ content: '❌ يجب أن تكون في قناة صوتية!', ephemeral: true });
+        return interaction.reply({ content: '❌ You must be in a voice channel!', ephemeral: true });
       }
 
       const channelData = tempChannels.get(voiceChannel.id);
       if (!channelData || channelData.ownerId !== interaction.user.id) {
-        return interaction.reply({ content: '❌ يمكن فقط لمالك القناة حذف القناة!', ephemeral: true });
+        return interaction.reply({ content: '❌ Only the channel owner can delete the channel!', ephemeral: true });
       }
 
       // Cancel any existing pending delete for this channel first
@@ -1958,7 +2144,7 @@ client.on('interactionCreate', async (interaction) => {
       pendingDeletes.set(voiceChannel.id, timeoutId);
 
       await interaction.reply({
-        content: '🗑️ سيتم حذف القناة خلال **5 ثوانٍ**... اضغط إلغاء لوقف الحذف.',
+        content: '<:delete:1518723074231632034> Channel will be deleted in **5 seconds**... Press Cancel to stop.',
         ephemeral: true
       });
     }
@@ -1968,9 +2154,9 @@ client.on('interactionCreate', async (interaction) => {
       if (voiceChannel && pendingDeletes.has(voiceChannel.id)) {
         clearTimeout(pendingDeletes.get(voiceChannel.id));
         pendingDeletes.delete(voiceChannel.id);
-        await interaction.reply({ content: '✅ تم إلغاء عملية حذف القناة بنجاح.', ephemeral: true });
+        await interaction.reply({ content: '✅ Deletion cancelled successfully.', ephemeral: true });
       } else {
-        await interaction.reply({ content: '✅ لا توجد عملية حذف معلقة.', ephemeral: true });
+        await interaction.reply({ content: '✅ No pending deletion found.', ephemeral: true });
       }
     }
 
@@ -2042,7 +2228,7 @@ client.on('interactionCreate', async (interaction) => {
       const channelData = tempChannels.get(voiceChannel?.id);
 
       if (!voiceChannel || !channelData || channelData.ownerId !== interaction.user.id) {
-        return interaction.reply({ content: '❌ يمكن فقط لمالك القناة قبول الطلبات!', ephemeral: true });
+        return interaction.reply({ content: '❌ Only the channel owner can accept requests!', ephemeral: true });
       }
 
       await voiceChannel.permissionOverwrites.edit(requesterId, {
@@ -2070,7 +2256,7 @@ client.on('interactionCreate', async (interaction) => {
       const channelData = tempChannels.get(voiceChannel?.id);
 
       if (!voiceChannel || !channelData || channelData.ownerId !== interaction.user.id) {
-        return interaction.reply({ content: '❌ يمكن فقط لمالك القناة رفض الطلبات!', ephemeral: true });
+        return interaction.reply({ content: '❌ Only the channel owner can reject requests!', ephemeral: true });
       }
 
       await interaction.update({ content: `❌ Request from <@${requesterId}> was rejected.`, embeds: [], components: [] });
@@ -2091,7 +2277,7 @@ client.on('interactionCreate', async (interaction) => {
     try {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
-          content: '❌ حدث خطأ أثناء معالجة طلبك. يرجى المحاولة مرة أخرى.',
+          content: '❌ An error occurred while processing your request. Please try again.',
           ephemeral: true
         });
       }
@@ -2119,7 +2305,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (!voiceChannel) {
         return interaction.reply({
-          content: '❌ يجب أن تكون في قناة صوتية!',
+          content: '❌ You must be in a voice channel!',
           ephemeral: true
         });
       }
@@ -2127,7 +2313,7 @@ client.on('interactionCreate', async (interaction) => {
       const channelData = tempChannels.get(voiceChannel.id);
       if (!channelData || channelData.ownerId !== interaction.user.id) {
         return interaction.reply({
-          content: '❌ يمكن فقط لمالك القناة تغيير الاسم!',
+          content: '❌ Only the channel owner can rename!',
           ephemeral: true
         });
       }
@@ -2137,12 +2323,12 @@ client.on('interactionCreate', async (interaction) => {
       try {
         await voiceChannel.setName(newName);
         await interaction.reply({
-          content: `✏️ تم تغيير اسم القناة إلى: **${newName}**`,
+          content: `✏️ Channel renamed to: **${newName}**`,
           ephemeral: true
         });
       } catch (error) {
         await interaction.reply({
-          content: '❌ حدث خطأ أثناء تغيير اسم القناة!',
+          content: '❌ Error renaming the channel!',
           ephemeral: true
         });
       }
@@ -2157,9 +2343,9 @@ client.on('interactionCreate', async (interaction) => {
       const newName = interaction.fields.getTextInputValue('panel_new_name');
       try {
         await voiceChannel.setName(`🔊｜${newName}`);
-        await interaction.reply({ content: `✏️ تم تغيير اسم القناة بنجاح إلى: **${newName}**`, ephemeral: true });
+        await interaction.reply({ content: `<:editing:1518718647651139657> Channel renamed to: **${newName}**`, ephemeral: true });
       } catch (error) {
-        await interaction.reply({ content: '❌ حدث خطأ أثناء تغيير اسم القناة! قد يكون هناك ضغط (Rate Limit).', ephemeral: true });
+        await interaction.reply({ content: '❌ Error renaming the channel! Possible rate limit.', ephemeral: true });
       }
     }
 
@@ -2173,17 +2359,32 @@ client.on('interactionCreate', async (interaction) => {
       const userLimit = parseInt(limitInput);
 
       if (isNaN(userLimit) || userLimit < 0 || userLimit > 99) {
-        return interaction.reply({ content: '❌ يجب أن يكون الرقم بين 0 و 99!', ephemeral: true });
+        return interaction.reply({ content: '❌ Number must be between 0 and 99!', ephemeral: true });
       }
 
       try {
         await voiceChannel.setUserLimit(userLimit);
-        await interaction.reply({ content: `🔢 تم تحديد عدد الأعضاء بنجاح إلى: **${userLimit === 0 ? 'غير محدود' : userLimit}**`, ephemeral: true });
+        await interaction.reply({ content: `<:limited:1518719076464070848> Member limit set to: **${userLimit === 0 ? 'Unlimited' : userLimit}**`, ephemeral: true });
       } catch (error) {
-        await interaction.reply({ content: '❌ حدث خطأ أثناء تحديد عدد الأعضاء!', ephemeral: true });
+        await interaction.reply({ content: '❌ Error setting member limit!', ephemeral: true });
       }
     }
 
+    // Handle panel status modal
+    if (interaction.customId === 'panel_status_modal') {
+      const result = await checkOwnership(interaction, tempChannels);
+      if (!result) return;
+      const { voiceChannel, channelData } = result;
+      const newStatus = interaction.fields.getTextInputValue('panel_status_text');
+      if (!channelData.settings) channelData.settings = {};
+      channelData.settings.status = newStatus;
+      try {
+        await fetch(`https://discord.com/api/v10/channels/${voiceChannel.id}/voice-status`, { method: 'PUT', headers: { 'Authorization': `Bot ${client.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ status: newStatus }) });
+      } catch {}
+      interaction.reply({ content: `<:status:1519129675236905041> Status updated to: **${newStatus}**`, ephemeral: true });
+    }
+
+    // Handle panel invite modal
   } catch (error) {
     console.error('❌ Modal Submission Error:', error);
 
@@ -2191,7 +2392,7 @@ client.on('interactionCreate', async (interaction) => {
     try {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
-          content: '❌ حدث خطأ أثناء معالجة طلبك. يرجى المحاولة مرة أخرى.',
+          content: '❌ An error occurred while processing your request. Please try again.',
           ephemeral: true
         });
       }
@@ -2206,6 +2407,53 @@ client.on('error', (error) => logger.error('Discord Client Error', error));
 client.on('warn', (warning) => logger.warn(`Discord Warning: ${warning}`));
 // ─────────────────────────────────────────────────────────────────────────
 
+// ── Sync temp channels from MongoDB after restart ──────────────────────────
+async function syncTempChannelsOnReady() {
+  logger.info('[ChannelSync] Verifying temp channels from MongoDB...');
+  const { hydrateChannelsCache, fetchAllChannelsFromDB, removeChannelFromDB } = require('./utils/jsonStorage');
+  await hydrateChannelsCache();
+  const dbChannels = await fetchAllChannelsFromDB();
+  const entries = Object.entries(dbChannels);
+
+  if (entries.length === 0) {
+    logger.info('[ChannelSync] No channels in DB to sync.');
+    return;
+  }
+
+  logger.info(`[ChannelSync] Found ${entries.length} channel(s) in DB. Validating against Discord...`);
+
+  let restored = 0;
+  let cleaned = 0;
+
+  for (const [channelId, channelData] of entries) {
+    let found = false;
+
+    for (const guild of client.guilds.cache.values()) {
+      const channel = guild.channels.cache.get(channelId) ||
+        await guild.channels.fetch(channelId).catch(() => null);
+
+      if (channel && channel.type === ChannelType.GuildVoice) {
+        tempChannels.set(channelId, channelData);
+        found = true;
+        restored++;
+        break;
+      }
+    }
+
+    if (!found) {
+      await removeChannelFromDB(channelId);
+      logger.warn(`[ChannelSync] Removed stale channel ${channelId} from DB (no longer exists).`);
+      cleaned++;
+    }
+  }
+
+  tempChannelsObj = mapToObject(tempChannels);
+  saveChannels(tempChannelsObj);
+
+  logger.success(`[ChannelSync] Done — ${restored} restored, ${cleaned} stale entries cleaned. Active: ${tempChannels.size}`);
+}
+// ─────────────────────────────────────────────────────────────────────────
+
 // ── Ready handler (invoked after successful login) ──────────────────────────
 async function handleClientReady() {
   logger.success(`Logged in as ${client.user.tag}`);
@@ -2213,9 +2461,12 @@ async function handleClientReady() {
   logger.info(`Serving ${client.users.cache.size} cached user(s)`);
 
   client.user.setPresence({
-    activities: [{ name: 'Voice Channels | .v help', type: 3 }],
-    status: 'online',
+    activities: [{ name: 'wisdom circle ⭕ .v panel', type: 3 }],
+    status: 'offline',
   });
+
+  // Sync temp channels from MongoDB (restore cache & clean stale entries)
+  await syncTempChannelsOnReady();
 
   // Connect to Create Room in every guild
   for (const guild of client.guilds.cache.values()) {
@@ -2250,6 +2501,34 @@ client.on('roleUpdate', async (oldRole, newRole) => {
     }
   }
   logger.success('Finished syncing member permissions after role update.');
+});
+// ─────────────────────────────────────────────────────────────────────────
+
+// ── Channel Delete: auto-clean temp channels from DB ──────────────────────
+client.on('channelDelete', async (channel) => {
+  if (channel.type !== ChannelType.GuildVoice) return;
+
+  if (tempChannels.has(channel.id)) {
+    const cd = tempChannels.get(channel.id);
+
+    // Also delete the associated text channel if it still exists
+    if (cd.textChannelId) {
+      const tc = channel.guild.channels.cache.get(cd.textChannelId);
+      if (tc) await tc.delete().catch(() => {});
+    }
+
+    tempChannels.delete(channel.id);
+    emptySince.delete(channel.id);
+
+    // Remove from MongoDB
+    const { removeChannelFromDB } = require('./utils/jsonStorage');
+    await removeChannelFromDB(channel.id);
+
+    tempChannelsObj = mapToObject(tempChannels);
+    saveChannels(tempChannelsObj);
+
+    logger.info(`[channelDelete] Temp channel ${channel.id} deleted externally — cleaned from DB.`);
+  }
 });
 // ─────────────────────────────────────────────────────────────────────────
 

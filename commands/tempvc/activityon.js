@@ -9,8 +9,7 @@ module.exports = {
     if (!voiceChannel) {
       const errorEmbed = new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **You must be in a voice channel to use this command!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
+        .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`You must be in a voice channel to use this command!\`**__`);
       return message.reply({ embeds: [errorEmbed] });
     }
     
@@ -25,18 +24,8 @@ module.exports = {
     
     const successEmbed = new EmbedBuilder()
       .setColor(0x2B2D31)
-      .setTitle('🎮 تم تفعيل الأنشطة')
-      .setDescription('تم تفعيل الأنشطة مثل Watch Together بنجاح في القناة الصوتية!')
-      .addFields(
-        { name: '🎤 القناة', value: voiceChannel.name, inline: true },
-        { name: '⚡ الحالة', value: 'مفعل', inline: true },
-        { name: '👤 بواسطة', value: `<@${message.author.id}>`, inline: true },
-        { name: '🎯 الأنشطة المتاحة', value: 'Watch Together, Games, وأكثر!', inline: false }
-      )
-      .setThumbnail(message.guild.iconURL({ dynamic: true }))
-      .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-      .setTimestamp();
-    
+      .setDescription(`<:activity:1519129435536752850>  *\`Activities ON\`*`);
+
     message.reply({ embeds: [successEmbed] });
   }
 };

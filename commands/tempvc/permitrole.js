@@ -1,26 +1,28 @@
 const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-const { errorEmbed } = require('../../utils/helpers');
 
 module.exports = {
   name: 'permitrole',
   description: 'Allow a specific role to join your temp channel.',
   execute: async (client, message, args, tempChannels) => {
+    const err = (msg) => new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`${msg}\`**__`);
+
     const role = message.mentions.roles.first();
-    if (!role) return message.reply({ embeds: [errorEmbed('رجاء منشن الدور (Role) اللي بغيت تسمح ليه.', client)] });
+    if (!role) return message.reply({ embeds: [err('Please mention a role to permit!')] });
 
     const voiceChannel = message.member.voice.channel;
-    if (!voiceChannel) return message.reply({ embeds: [errorEmbed('You must be in a voice channel!', client)] });
+    if (!voiceChannel) return message.reply({ embeds: [err('You must be in a voice channel!')] });
 
     const channelData = tempChannels.get(voiceChannel.id);
-    if (!channelData) return message.reply({ embeds: [errorEmbed('This is not a temporary channel!', client)] });
+    if (!channelData) return message.reply({ embeds: [err('This is not a temporary channel!')] });
 
-    // Admin or Owner can run this
     const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID;
     const isOwner = channelData.ownerId === message.author.id;
     const isAdmin = ADMIN_ROLE_ID && message.member.roles.cache.has(ADMIN_ROLE_ID);
 
     if (!isOwner && !isAdmin) {
-      return message.reply({ embeds: [errorEmbed('You are not the owner or an admin!', client)] });
+      return message.reply({ embeds: [err('You are not the owner or an admin!')] });
     }
 
     try {
@@ -29,16 +31,13 @@ module.exports = {
         [PermissionFlagsBits.ViewChannel]: true
       });
 
-      const embed = new EmbedBuilder()
+      const successEmbed = new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setTitle('✅ تم السماح للدور')
-        .setDescription(`تم السماح للدور **${role.name}** بالانضمام للقناة.`)
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
+        .setDescription(`<:permit_role:1519127059044106300>  *\`Permitted <@&${role.id}>\`*`);
 
-      message.reply({ embeds: [embed] });
+      message.reply({ embeds: [successEmbed] });
     } catch (error) {
-      message.reply({ embeds: [errorEmbed('Failed to permit role.', client)] });
+      message.reply({ embeds: [err('Failed to permit role.')] });
     }
   }
 };

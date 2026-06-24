@@ -124,9 +124,9 @@ module.exports = {
         Don't worry! You can now send a formal request to the owner.
         
         <a:org:1449141144268308595> **Process Details:**
-        <:voice6:1358152460979404992> Click the button below to start.
-        <:voice4:1358152468273430718> Select your desired locked room.
-        <a:loading:1450241657261002864> The owner will be notified instantly.
+        <:editing:1518718647651139657> Click the button below to start.
+        <:limited:1518719076464070848> Select your desired locked room.
+        <:kick:1518720896502731063> The owner will be notified instantly.
         
         *Please await the owner's decision patiently.*
       `)
@@ -155,8 +155,8 @@ module.exports = {
         .setDescription(`
 <a:boost:1449497847094444083> **GENERAL GUIDELINES**
 
-<:voice6:1358152460979404992> **Ownership:** Your One Tap = Your Rules. You have full control.
-<a:Red_Eye:1450210370487718071> **Privacy:** Use \`.v lock\` to keep your conversations private.
+<:editing:1518718647651139657> **Ownership:** Your One Tap = Your Rules. You have full control.
+<:hidden:1518719584557989998> **Privacy:** Use \`.v lock\` to keep your conversations private.
 <a:notif:1447321335117123610> **Toxicity:** No toxicity allowed unless the room is locked and clearly labeled.
 
 <a:FZ_red_cross:1360451122807963770> **STRICT PROHIBITIONS**
@@ -165,7 +165,7 @@ module.exports = {
 <a:warning_animated:1361729714259099809> **Advertising:** Promoting other servers/links = **Permanent Ban**.
 <a:org:1449141144268308595> **Staff Impersonation:** Do not name rooms after staff for provocation.
 
-<a:loading:1450241657261002864> **ADDITIONAL NOTES**
+<:kick:1518720896502731063> **ADDITIONAL NOTES**
 🎵 Limit to **one** music bot per voice channel.
 👮 Do not abuse permissions. Report issues in ⁠⛔│NEED HELP.
 

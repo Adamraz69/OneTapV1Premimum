@@ -9,8 +9,7 @@ module.exports = {
     if (!voiceChannel) {
       const errorEmbed = new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **You must be in a voice channel to use this command!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
+        .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`You must be in a voice channel to use this command!\`**__`);
       return message.reply({ embeds: [errorEmbed] });
     }
     
@@ -24,18 +23,9 @@ module.exports = {
     }
     
     const successEmbed = new EmbedBuilder()
-      .setColor('#E67E22')
-      .setTitle('🚫 تم إلغاء تفعيل الأنشطة')
-      .setDescription('تم إلغاء تفعيل الأنشطة بنجاح في القناة الصوتية!')
-      .addFields(
-        { name: '🎤 القناة', value: voiceChannel.name, inline: true },
-        { name: '⚡ الحالة', value: 'معطل', inline: true },
-        { name: '👤 بواسطة', value: `<@${message.author.id}>`, inline: true }
-      )
-      .setThumbnail(message.guild.iconURL({ dynamic: true }))
-      .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-      .setTimestamp();
-    
+      .setColor(0x2B2D31)
+      .setDescription(`<:activity:1519129435536752850>  *\`Activities OFF\`*`);
+
     message.reply({ embeds: [successEmbed] });
   }
 };

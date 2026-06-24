@@ -73,7 +73,7 @@ module.exports = {
     channelData.autoLockedForSave = false; 
 
     // Update settings string visually
-    channelData.settings.status = `<:lock:1452014333965111398>  **SAVED for ${timeArg}**`;
+    channelData.settings.status = `<:lock:1518716352456687697>  **SAVED for ${timeArg}**`;
 
     const embed = new EmbedBuilder()
       .setColor(0xF1C40F) // Premium Gold

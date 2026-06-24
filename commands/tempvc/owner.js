@@ -4,24 +4,20 @@ module.exports = {
   name: 'owner',
   description: 'Show the current owner of the temp channel.',
   execute: async (client, message, args, tempChannels) => {
+    const err = (msg) => new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`${msg}\`**__`);
+
     const voiceChannel = message.member.voice.channel;
     
     if (!voiceChannel) {
-      const errorEmbed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **You must be in a voice channel to use this command!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
-      return message.reply({ embeds: [errorEmbed] });
+      return message.reply({ embeds: [err('You must be in a voice channel to use this command!')] });
     }
     
     const channelData = tempChannels.get(voiceChannel.id);
 
     if (!channelData) {
-      const errorEmbed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription('> <a:warning_animated:1361729714259099809> **This is not a temporary channel!**')
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() });
-      return message.reply({ embeds: [errorEmbed] });
+      return message.reply({ embeds: [err('This is not a temporary channel!')] });
     }
 
     try {
@@ -49,13 +45,7 @@ module.exports = {
       
       const errorEmbed = new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setTitle('❌ خطأ في جلب المعلومات')
-        .setDescription('حدث خطأ أثناء جلب معلومات المالك!')
-        .addFields(
-          { name: '🆔 معرف المالك', value: channelData.ownerId, inline: false }
-        )
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
+        .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`Failed to fetch owner information!\`**__`);
       
       message.reply({ embeds: [errorEmbed] });
     }

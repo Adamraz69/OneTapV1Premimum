@@ -1,16 +1,19 @@
 const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-const { errorEmbed } = require('../../utils/helpers');
 
 module.exports = {
   name: 'unhide',
   description: 'Make the channel visible to the public role.',
   execute: async (client, message, args, tempChannels) => {
+    const err = (msg) => new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setDescription(`>  <a:warning_animated:1361729714259099809> __**\`${msg}\`**__`);
+
     const voiceChannel = message.member.voice.channel;
-    if (!voiceChannel) return message.reply({ embeds: [errorEmbed('You must be in a voice channel!', client)] });
+    if (!voiceChannel) return message.reply({ embeds: [err('You must be in a voice channel!')] });
 
     const channelData = tempChannels.get(voiceChannel.id);
-    if (!channelData) return message.reply({ embeds: [errorEmbed('This is not a temporary channel!', client)] });
-    if (channelData.ownerId !== message.author.id) return message.reply({ embeds: [errorEmbed('You are not the owner of this channel!', client)] });
+    if (!channelData) return message.reply({ embeds: [err('This is not a temporary channel!')] });
+    if (channelData.ownerId !== message.author.id) return message.reply({ embeds: [err('You are not the owner of this channel!')] });
 
     const targetRoleId = process.env.TEMP_ROOM_ROLE_ID || message.guild.id;
 
@@ -19,19 +22,11 @@ module.exports = {
 
       const successEmbed = new EmbedBuilder()
         .setColor(0x2B2D31)
-        .setTitle(`<a:Eyes:1450279319971823789> **CHANNEL VISIBLE**`)
-        .setDescription(`> <a:notif:1447321335117123610> **Channel is now visible to everyone.**`)
-        .addFields(
-          { name: `<:voice2:1358152471687467228> Channel`, value: `${voiceChannel.name}`, inline: true },
-          { name: `<a:org:1449141144268308595> Owner`, value: `<@${message.author.id}>`, inline: true }
-        )
-        .setThumbnail(message.guild.iconURL({ dynamic: true }))
-        .setFooter({ text: 'Wisdom TMPV - S Version ©', iconURL: client.user.displayAvatarURL() })
-        .setTimestamp();
+        .setDescription(`<:hidden:1518719584557989998>  *\`Channel Visible\`*`);
 
       message.reply({ embeds: [successEmbed] });
     } catch (error) {
-      message.reply({ embeds: [errorEmbed('Failed to unhide the channel.', client)] });
+      message.reply({ embeds: [err('Failed to unhide the channel.')] });
     }
   }
 };
