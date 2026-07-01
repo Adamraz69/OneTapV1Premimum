@@ -682,18 +682,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         }
       }
 
-      // ── Welcome message when someone joins (only in rooms with <10 members) ──
-      if (!isOwner && newState.channel.members.size < 10) {
-        try {
-          const joinEmbed = new EmbedBuilder()
-            .setColor(0x2B2D31)
-            .setDescription(`> 👋 **${newState.member.displayName}** joined **${newState.channel.name}**!\n> <@${channelData.ownerId}> welcome them with love 💝`)
-            .setFooter({ text: 'Together in friendship and harmony 🤝', iconURL: newState.guild.iconURL({ dynamic: true }) });
-          const sent = await newState.channel.send({ embeds: [joinEmbed] });
-          setTimeout(() => sent.delete().catch(() => {}), 60_000);
-        } catch (_) {}
-      }
-
       // ── Notify ONLY the channel owner in TEMP-HELP (not every member who joins) ──
       const isChannelOwner = channelData.ownerId === newState.member.id;
       if (isChannelOwner) {
